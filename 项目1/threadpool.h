@@ -8,6 +8,17 @@
 #include <mutex>
 #include <condition_variable>
 #include <functional>
+#include <unordered_map>
+
+/*
+	线程池类中有线程池数组，存储线程池数量，首先创建线程池启动线程，
+	启动线程后，通过submitTask向线程池中添加任务，此时需要进行线程通信
+	该线程同步，需要保证threadFunc取任务时，任务队列中有任务，Submit时
+	需要保证任务队列还没有满。
+	为了取到线程的返回值，由于该返回值由用户决定所以需要实现一个Any类来接收
+	任意类型的数据，submit之后返回一个有Any数据的Result类，同时，Result类的
+	对象创建在提交任务时，若创建成功返回数据类型，否则返回空
+*/
 
 //Task类型的前置声明
 class Task;
@@ -68,6 +79,7 @@ public:
 	}
 
 private:
+	//信号量资源数
 	int resLimit_;
 	std::mutex mtx_;
 	std::condition_variable cond_;
@@ -104,13 +116,18 @@ enum class PoolMode {
 //线程类型
 class Thread {
 public:
-	using ThreadFunc = std::function<void()>;
+	using ThreadFunc = std::function<void(int)>;
 	Thread(ThreadFunc func);
 	~Thread();//线程析构
 	//线程启动函数
 	void start();
+
+	//获取线程id
+	int getId() const;
 private:
 	ThreadFunc func_;
+	static int generateId_;
+	int threadId; //保存线程id
 };
 //任务抽象基类
 class Task {
@@ -118,10 +135,12 @@ public:
 	Task();
 	~Task() =default;
 	void exec();
+	//传入对应的Result对象
 	void setResult(Result* res);
 	
 	virtual Any run() = 0;
 public:
+	//result生命周期比Task长，裸指针即可
 	Result* result_;
 };
 
@@ -158,33 +177,54 @@ public:
 
 	//线程池阈值设置
 	void setTaskQueThreshHold(int threadhold);
+	void setThreadSizeThreshHold(int threadhold);
+
 
 	//给线程池提交任务
 	Result submitTask(std::shared_ptr<Task> sp);
 
 	ThreadPool(const ThreadPool&) = delete;
 	ThreadPool& operator=(const ThreadPool&) = delete;
+	
+
 
 private:
 	//线程函数 从队列中消费任务
-	void threadFunc();
+	void threadFunc(int threadId);
+
+	//检查线程池的运行状态
+	bool checkRunning()const;
 private:
 	//线程列表
-	std::vector<std::unique_ptr<Thread>> threads_;
+	//std::vector<std::unique_ptr<Thread>> threads_;
+	std::unordered_map<int, std::unique_ptr<Thread>>threads_;
+	
 	//初始线程个数
 	size_t initThreadSize_;
+	//记录线程池中总线程数量
+	std::atomic_int curThreadNum_;
+	//记录空闲线程的数量
+	std::atomic_int freeThread;
 	//初始化任务队列
 	std::queue<std::shared_ptr<Task>> taskQue_;
 	//任务个数
 	std::atomic_int taskSize_;
 	//任务数量阈值,上限
 	int taskSizeThreshHold_;
+	//线程数量上限
+	int threadSizeThreshHold_;
 
 	std::mutex taskQueMtx_;//保证任务队列线程安全
 	std::condition_variable notFull_;//保证任务队列不满
 	std::condition_variable notEmpty_;//保证任务队列不空
+	std::condition_variable exit_;
+
 
 	PoolMode poolMode_;//工作模式
+
+	std::atomic_bool isStart;//表示当前线程池的启动状态
+
+
 };
 
 #endif
